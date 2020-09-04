@@ -113,20 +113,46 @@ class Trainer(nn.Module):
         for ckpt in paths_to_delete:
             os.remove(ckpt)
 
-    def train_on_batch(self, *batch, device):
-        x_batch, y_batch = batch
-        x_batch = torch.as_tensor(x_batch, device=device)
-        y_batch = torch.as_tensor(y_batch, device=device)
-
-        self.model.train()
-        self.opt.zero_grad()
-        loss = self.loss_function(self.model(x_batch), y_batch).mean()
-        loss.backward()
-        self.opt.step()
-        self.step += 1
-        self.writer.add_scalar('train loss', loss.item(), self.step)
+    def train_on_batch(self, dense, label, weight, display, device, is_eval=False):
+      
+        x_batch = torch.as_tensor(dense, device=device)  # device should be cpu
+        y_batch = torch.as_tensor(label, device=device)
+        weight = torch.as_tensor(weight, device=device)
+        display = torch.as_tensor(display, device=device)
         
-        return {'loss': loss}
+        if is_eval:
+          self.model.train(False)
+        else:
+          self.model.train()
+        self.opt.zero_grad()
+        
+        if is_eval:
+          with torch.no_grad():
+            logits = self.model(x_batch)
+        else:
+          logits = self.model(x_batch)
+        
+        # display
+        logits[:,1] -= torch.log(1.0 / display - 1.0) 
+        
+        # unweighted loss
+        # loss = self.loss_function(logits, y_batch).mean()
+        
+        # weighted loss
+        raw_loss = self.loss_function(logits, y_batch, reduce=False, reduction=None).view(-1)  # check dim, reduc
+        w_loss = torch.mul(weight.view(-1), raw_loss)
+        sum_w_loss = torch.sum(w_loss)
+        sum_w = torch.sum(weight)
+        loss = sum_w_loss / sum_w
+        
+        if not is_eval:
+          loss.backward()
+          self.opt.step()
+          self.step += 1
+          # self.writer.add_scalar('train loss', loss.item(), self.step)
+        
+        return {'loss': loss, 'sum_w_loss': sum_w_loss, 'sum_w': sum_w, 'raw_loss': raw_loss}
+
 
     def evaluate_classification_error(self, X_test, y_test, device, batch_size=4096):
         X_test = torch.as_tensor(X_test, device=device)
